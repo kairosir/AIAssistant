@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.3.2"
+version = "0.3.3"
 description = "Private AI workspace for your documents"
 authors = ["OfficeGhost"]
 license = ""

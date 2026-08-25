@@ -24,7 +24,7 @@ export async function getIndexStatus(): Promise<IndexStatus> {
 }
 
 export async function getAiStatus(): Promise<AiStatus> {
-  return isTauri() ? call("get_ai_status") : { installed: true, installing: false, model: "qwen2.5:3b" };
+  return isTauri() ? call("get_ai_status") : { installed: true, installing: false, model: "OfficeGhost Local Core", online: true, provider: "officeghost-local-core" };
 }
 
 export async function getAppUpdateStatus(): Promise<UpdateStatus> {

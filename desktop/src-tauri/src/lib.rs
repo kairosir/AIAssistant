@@ -119,9 +119,11 @@ impl Default for AppState {
             index_cache: Arc::new(Mutex::new(IndexData::default())),
             worker: Arc::new(Mutex::new(None)),
             ai_status: Arc::new(Mutex::new(json!({
-              "installed": false,
+              "installed": true,
               "installing": false,
-              "model": "qwen2.5:1.5b",
+              "model": "OfficeGhost Local Core",
+              "online": true,
+              "provider": "officeghost-local-core",
               "progress": "",
               "error": ""
             }))),
@@ -809,19 +811,12 @@ fn sanitize_process_input(raw: &str) -> String {
 }
 
 fn load_ai_status_internal(app: &tauri::AppHandle, state: &AppState) {
-    let settings = load_settings_internal(app);
-    let model = if settings.ai_model.trim().is_empty() {
-        "qwen2.5:1.5b".to_string()
-    } else {
-        settings.ai_model.clone()
-    };
-
     let mut payload = json!({
-      "installed": false,
+      "installed": true,
       "installing": false,
-      "model": model,
+      "model": "OfficeGhost Local Core",
       "online": true,
-      "provider": "officeghost-cloud",
+      "provider": "officeghost-local-core",
       "progress": "",
       "error": ""
     });
@@ -840,8 +835,11 @@ fn load_ai_status_internal(app: &tauri::AppHandle, state: &AppState) {
         }
     }
 
+    payload["installed"] = Value::Bool(true);
     payload["installing"] = Value::Bool(false);
-    payload["model"] = Value::String(settings.ai_model);
+    payload["model"] = Value::String("OfficeGhost Local Core".to_string());
+    payload["online"] = Value::Bool(true);
+    payload["provider"] = Value::String("officeghost-local-core".to_string());
     payload["error"] = Value::String("".to_string());
 
     if let Ok(mut s) = state.ai_status.lock() {
@@ -897,9 +895,14 @@ fn normalize_search_query(raw: &str) -> String {
     const COMMAND_WORDS: &[&str] = &[
         "найди", "найдите", "найти", "поищи", "поищите", "ищи", "ищите", "ищу",
         "поиск", "покажи", "покажите", "мне", "пожалуйста", "слово", "слова", "фразу",
-        "фраза", "в", "во", "на", "по", "из", "с", "со", "файл", "файлы", "файле",
-        "файлах", "документ", "документы", "документе", "документах", "find", "search",
+        "фраза", "в", "во", "на", "по", "из", "с", "со", "файл", "файлы", "файлов",
+        "файле", "файлах", "документ", "документы", "документов", "документе",
+        "документах", "find", "search",
         "show", "please", "for", "in", "my", "file", "files", "document", "documents",
+        "сколько", "количество", "посчитай", "содержит", "содержат", "сводка", "сводку",
+        "краткая", "краткую", "сравни", "сравнить", "сделай", "дай", "назови", "объясни",
+        "смысл", "найденного", "count", "how", "many", "contains", "summary", "summarize",
+        "compare", "make", "give",
     ];
 
     let meaningful = raw
@@ -1288,6 +1291,255 @@ fn quick_chat_reply(query: &str) -> Option<String> {
     }
 
     None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalDocumentIntent {
+    Find,
+    Summarize,
+    Count,
+    Compare,
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn detect_local_document_intent(query: &str) -> Option<LocalDocumentIntent> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+
+    if contains_any(
+        &q,
+        &["сколько", "количество", "посчитай", "count", "how many"],
+    ) {
+        return Some(LocalDocumentIntent::Count);
+    }
+    if contains_any(&q, &["сравн", "отлич", "разниц", "compare", "difference"]) {
+        return Some(LocalDocumentIntent::Compare);
+    }
+    if contains_any(
+        &q,
+        &[
+            "сводк",
+            "кратк",
+            "резюм",
+            "обобщ",
+            "итог",
+            "о чем",
+            "о чём",
+            "про что",
+            "что в этом файле",
+            "summary",
+            "summar",
+            "overview",
+        ],
+    ) {
+        return Some(LocalDocumentIntent::Summarize);
+    }
+    if contains_any(
+        &q,
+        &[
+            "найд",
+            "поиск",
+            "поищ",
+            "покажи",
+            "назови файл",
+            "в каких файл",
+            "где встреч",
+            "где упомина",
+            "find",
+            "search",
+            "show",
+            "which file",
+            "where is",
+        ],
+    ) {
+        return Some(LocalDocumentIntent::Find);
+    }
+
+    None
+}
+
+fn compact_local_text(raw: &str) -> String {
+    sanitize_process_input(raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn local_excerpt(raw: &str, max_chars: usize) -> String {
+    let compact = compact_local_text(raw);
+    if compact.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut sentence_ends = 0usize;
+    for ch in compact.chars() {
+        if out.chars().count() >= max_chars {
+            break;
+        }
+        out.push(ch);
+        if matches!(ch, '.' | '!' | '?') && out.chars().count() >= 60 {
+            sentence_ends += 1;
+            if sentence_ends >= 2 {
+                break;
+            }
+        }
+    }
+
+    if out.chars().count() < compact.chars().count() && !out.ends_with(['.', '!', '?', '…']) {
+        out.push('…');
+    }
+    out
+}
+
+fn local_source_rows(context_items: &[Value], attached: &[Value]) -> Vec<(String, String, String)> {
+    let mut rows: Vec<(String, String, String)> = vec![];
+    let mut seen = std::collections::HashSet::new();
+
+    for item in attached {
+        let path = compact_local_text(get_value_str(item, "path"));
+        let content = compact_local_text(get_value_str(item, "content"));
+        if path.is_empty()
+            || content.is_empty()
+            || content.starts_with("[File not found]")
+            || content.starts_with("[Content not extracted")
+            || !seen.insert(path.clone())
+        {
+            continue;
+        }
+        let name = Path::new(&path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&path)
+            .to_string();
+        rows.push((name, path, content));
+    }
+
+    for item in context_items {
+        let path = compact_local_text(get_value_str(item, "path"));
+        if path.is_empty() || !seen.insert(path.clone()) {
+            continue;
+        }
+        let raw_name = compact_local_text(get_value_str(item, "name"));
+        let name = if raw_name.is_empty() {
+            Path::new(&path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(&path)
+                .to_string()
+        } else {
+            raw_name
+        };
+        rows.push((
+            name,
+            path,
+            compact_local_text(get_value_str(item, "snippet")),
+        ));
+    }
+
+    rows
+}
+
+fn build_local_document_answer(
+    intent: LocalDocumentIntent,
+    context_items: &[Value],
+    attached: &[Value],
+    ru: bool,
+) -> String {
+    let rows = local_source_rows(context_items, attached);
+    if rows.is_empty() {
+        return if ru {
+            "Локальное ядро не нашло текста для ответа. Уточните запрос или прикрепите нужный файл."
+                .to_string()
+        } else {
+            "The local core found no text to answer from. Refine the query or attach the file."
+                .to_string()
+        };
+    }
+
+    let mut lines: Vec<String> = vec![];
+    match intent {
+        LocalDocumentIntent::Count => {
+            let limited = context_items.len() >= 2000;
+            lines.push(if ru {
+                if limited {
+                    format!(
+                        "Локально найдено не менее {} подходящих файлов.",
+                        rows.len()
+                    )
+                } else {
+                    format!("Локально найдено подходящих файлов: {}.", rows.len())
+                }
+            } else if limited {
+                format!("At least {} matching files were found locally.", rows.len())
+            } else {
+                format!("Matching files found locally: {}.", rows.len())
+            });
+        }
+        LocalDocumentIntent::Summarize => lines.push(if ru {
+            "Краткая локальная сводка по найденным материалам:".to_string()
+        } else {
+            "A concise local summary of the retrieved material:".to_string()
+        }),
+        LocalDocumentIntent::Compare => {
+            if rows.len() < 2 {
+                lines.push(if ru {
+                    "Для сравнения найден только один подходящий файл. Добавьте или уточните второй документ."
+                        .to_string()
+                } else {
+                    "Only one matching file was found. Add or clarify the second document to compare."
+                        .to_string()
+                });
+            } else {
+                lines.push(if ru {
+                    "Локальное сравнение найденных фрагментов:".to_string()
+                } else {
+                    "Local comparison of the retrieved excerpts:".to_string()
+                });
+            }
+        }
+        LocalDocumentIntent::Find => lines.push(if ru {
+            format!(
+                "Показываю наиболее релевантные материалы из локального индекса: {}.",
+                rows.len()
+            )
+        } else {
+            format!(
+                "Showing the most relevant material from the local index: {}.",
+                rows.len()
+            )
+        }),
+    }
+
+    let max_rows = match intent {
+        LocalDocumentIntent::Count => 12,
+        LocalDocumentIntent::Compare => 6,
+        LocalDocumentIntent::Summarize => 6,
+        LocalDocumentIntent::Find => 8,
+    };
+    for (index, (name, _path, content)) in rows.iter().take(max_rows).enumerate() {
+        let excerpt = local_excerpt(content, 320);
+        if excerpt.is_empty() {
+            lines.push(format!("{}. **{}**", index + 1, name));
+        } else {
+            lines.push(format!("{}. **{}** — {}", index + 1, name, excerpt));
+        }
+    }
+
+    if rows.len() > max_rows {
+        lines.push(if ru {
+            format!("Ещё файлов в результате: {}.", rows.len() - max_rows)
+        } else {
+            format!("Additional matching files: {}.", rows.len() - max_rows)
+        });
+    }
+
+    lines.join("\n\n")
 }
 
 fn selected_model_from_settings(app: &tauri::AppHandle) -> String {
@@ -2803,9 +3055,11 @@ fn get_ai_status(state: State<'_, AppState>) -> Value {
         .map(|s| s.clone())
         .unwrap_or_else(|_| {
             json!({
-              "installed": false,
+              "installed": true,
               "installing": false,
-              "model": "qwen2.5:1.5b",
+              "model": "OfficeGhost Local Core",
+              "online": true,
+              "provider": "officeghost-local-core",
               "progress": "",
               "error": ""
             })
@@ -3308,16 +3562,30 @@ fn ask_ai_blocking(
         return json!({"ok": false, "error": if ru { "Пустой запрос" } else { "Empty query" }});
     }
 
-    let context_items = if use_documents { collect_context_from_index(&app, &state, &q, 14) } else { vec![] };
+    let local_intent = if use_documents {
+        detect_local_document_intent(&q)
+    } else {
+        None
+    };
+    let context_limit = if local_intent == Some(LocalDocumentIntent::Count) {
+        2000
+    } else {
+        14
+    };
+    let context_items = if use_documents {
+        collect_context_from_index(&app, &state, &q, context_limit)
+    } else {
+        vec![]
+    };
     let attached: Vec<Value> = file_paths
         .iter()
         .take(8)
         .map(|p| read_user_file_context(&app, p))
         .collect();
 
-    if history.is_empty() && !use_documents {
+    if !use_documents {
         if let Some(quick) = quick_chat_reply(&q) {
-            return json!({"ok": true, "answer": quick, "provider": "built-in"});
+            return json!({"ok": true, "answer": quick, "provider": "officeghost-local-core"});
         }
     }
 
@@ -3330,7 +3598,15 @@ fn ask_ai_blocking(
 
     let has_context = !context_items.is_empty() || has_attached_context;
     if use_documents && !has_context {
-        return json!({"ok": true, "answer": if ru { "Пока не нашел релевантных данных в локальных файлах. Попробуй уточнить ФИО/ключевые слова или добавь нужный файл в диалог." } else { "I couldn't find relevant data in local files yet. Try clarifying names/keywords or attach the needed file to the chat." }});
+        return json!({"ok": true, "answer": if ru { "Локальное ядро OfficeGhost не нашло релевантных данных. Уточните имя, фразу или прикрепите нужный файл." } else { "OfficeGhost Local Core found no relevant data. Refine the name or phrase, or attach the file." }, "provider": "officeghost-local-core"});
+    }
+
+    if let Some(intent) = local_intent {
+        return json!({
+          "ok": true,
+          "answer": build_local_document_answer(intent, &context_items, &attached, ru),
+          "provider": "officeghost-local-core"
+        });
     }
 
     let context_block = context_items
@@ -3470,21 +3746,11 @@ Attached files:
         if !use_documents {
             return json!({"ok": false, "error": if is_ru { "Нет подключения к облачному ИИ. Подключитесь к интернету или установите локальную модель." } else { "Cloud AI is unavailable. Connect to the internet or install a local model." }});
         }
-        let mut lines: Vec<String> = vec![if is_ru {
-            "Локальная модель сейчас недоступна, но я нашел это в проиндексированных файлах:"
-        } else {
-            "Local model is currently unavailable, but I found this in indexed files:"
-        }
-        .to_string()];
-        for item in context_items.iter().take(8) {
-            let p = sanitize_process_input(get_value_str(item, "path"));
-            let sn = sanitize_process_input(get_value_str(item, "snippet"));
-            lines.push(format!("{}: {}", if is_ru { "Файл" } else { "File" }, p));
-            if !sn.is_empty() {
-                lines.push(format!("{}", sn.chars().take(260).collect::<String>()));
-            }
-        }
-        return json!({"ok": true, "answer": lines.join("\n\n"), "provider": "local"});
+        return json!({
+          "ok": true,
+          "answer": build_local_document_answer(LocalDocumentIntent::Find, &context_items, &attached, is_ru),
+          "provider": "officeghost-local-core"
+        });
     }
 
     let prompt_arg = sanitize_process_input(&prompt_clean);
@@ -3494,21 +3760,12 @@ Attached files:
         Duration::from_secs(60),
     );
     if code == 124 {
-        let mut lines: Vec<String> = vec![if is_ru {
-            "Модель отвечает дольше обычного. Ниже быстрый ответ по индексу:"
-        } else {
-            "The model is taking too long. Here is a quick answer from the index:"
-        }
-        .to_string()];
-        for item in context_items.iter().take(6) {
-            let p = sanitize_process_input(get_value_str(item, "path"));
-            let sn = sanitize_process_input(get_value_str(item, "snippet"));
-            lines.push(format!("{}: {}", if is_ru { "Файл" } else { "File" }, p));
-            if !sn.is_empty() {
-                lines.push(sn.chars().take(220).collect::<String>());
-            }
-        }
-        return json!({"ok": true, "answer": lines.join("\n\n"), "provider": "local", "timeout": true});
+        return json!({
+          "ok": true,
+          "answer": build_local_document_answer(LocalDocumentIntent::Find, &context_items, &attached, is_ru),
+          "provider": "officeghost-local-core",
+          "timeout": true
+        });
     }
     if code != 0 {
         let err = if !stderr.trim().is_empty() {
@@ -3672,6 +3929,43 @@ mod document_tests {
             normalize_search_query("Find students in my files"),
             "students"
         );
+        assert_eq!(
+            normalize_search_query("Сколько файлов содержат договор"),
+            "договор"
+        );
+    }
+
+    #[test]
+    fn detects_local_document_tasks() {
+        assert_eq!(
+            detect_local_document_intent("Найди учеников в документах"),
+            Some(LocalDocumentIntent::Find)
+        );
+        assert_eq!(
+            detect_local_document_intent("Сделай краткую сводку файла"),
+            Some(LocalDocumentIntent::Summarize)
+        );
+        assert_eq!(
+            detect_local_document_intent("Сколько файлов содержат договор"),
+            Some(LocalDocumentIntent::Count)
+        );
+        assert_eq!(
+            detect_local_document_intent("Сравни два отчёта"),
+            Some(LocalDocumentIntent::Compare)
+        );
+    }
+
+    #[test]
+    fn local_core_builds_grounded_answer_with_source_name() {
+        let context = vec![json!({
+          "path": "/tmp/Ученики.docx",
+          "name": "Ученики.docx",
+          "snippet": "В документе перечислены ученики с результатами итоговой аттестации."
+        })];
+        let answer =
+            build_local_document_answer(LocalDocumentIntent::Summarize, &context, &[], true);
+        assert!(answer.contains("Ученики.docx"));
+        assert!(answer.contains("итоговой аттестации"));
     }
 }
 

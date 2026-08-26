@@ -87,26 +87,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
-name = "app"
-version = "0.3.3"
-dependencies = [
- "log",
- "rand 0.8.5",
- "rfd",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-deep-link",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-log",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "url",
- "zip 0.6.6",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2730,6 +2710,26 @@ dependencies = [
  "objc2-foundation",
  "objc2-javascript-core",
  "objc2-security",
+]
+
+[[package]]
+name = "officeghost"
+version = "0.3.4"
+dependencies = [
+ "log",
+ "rand 0.8.5",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-log",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "url",
+ "zip 0.6.6",
 ]
 
 [[package]]

@@ -381,37 +381,19 @@ fn open_target(path: &str) {
     }
 }
 
-fn get_default_roots() -> Vec<String> {
-    let mut roots: Vec<String> = vec![];
-
-    if let Ok(home) = std::env::var("HOME") {
-        for p in [
-            format!("{home}/Documents"),
-            format!("{home}/Downloads"),
-            format!("{home}/Desktop"),
-        ] {
-            if Path::new(&p).exists() && !roots.contains(&p) {
-                roots.push(p);
-            }
-        }
-    }
-
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        for p in [
-            format!("{profile}\\Documents"),
-            format!("{profile}\\Downloads"),
-            format!("{profile}\\Desktop"),
-        ] {
-            if Path::new(&p).exists() && !roots.contains(&p) {
-                roots.push(p);
-            }
-        }
-    }
-
-    roots
-}
-
 fn index_status_from_file(app: &tauri::AppHandle) -> Value {
+    if load_settings_internal(app).roots.is_empty() {
+        return json!({
+          "state": "needs_folder",
+          "scanned": 0,
+          "total": 0,
+          "fileCount": 0,
+          "byExt": {},
+          "scannedByExt": {},
+          "roots": []
+        });
+    }
+
     let index = load_index_internal(app);
     let mut by_ext: HashMap<String, i64> = HashMap::new();
 
@@ -551,12 +533,18 @@ fn start_indexing_internal(app: &tauri::AppHandle, state: &AppState, force_resta
     let mut roots = settings.roots;
     roots.retain(|r| Path::new(r).exists());
     if roots.is_empty() {
-        roots = get_default_roots();
-    }
-    if roots.is_empty() {
-        let err = json!({"state":"error","lastError": if ru { "Нет доступных папок для индексации" } else { "No available folders to index" }});
-        set_and_emit_status(app, state, err.clone());
-        return err;
+        let waiting = json!({
+          "state": "needs_folder",
+          "scanned": 0,
+          "total": 0,
+          "fileCount": 0,
+          "byExt": {},
+          "scannedByExt": {},
+          "roots": [],
+          "message": if ru { "Выберите папку, которую OfficeGhost может индексировать" } else { "Choose a folder OfficeGhost may index" }
+        });
+        set_and_emit_status(app, state, waiting.clone());
+        return waiting;
     }
 
     let Some(indexer_bin) = find_rust_indexer_path(app) else {
@@ -2953,6 +2941,10 @@ fn get_index_status(state: State<'_, AppState>) -> Value {
 
 #[tauri::command]
 fn search(app: tauri::AppHandle, state: State<'_, AppState>, query: String) -> Vec<Value> {
+    if load_settings_internal(&app).roots.is_empty() {
+        return vec![];
+    }
+
     let q = normalize_search_query(&query);
     let tokens = tokenize_query(&q);
 
@@ -4026,7 +4018,9 @@ pub fn run() {
             }
             let _ = app.emit("index-status", initial.clone());
 
-            if initial
+            let settings = load_settings_internal(&app.handle().clone());
+            if !settings.roots.is_empty()
+                && initial
                 .get("fileCount")
                 .and_then(|x| x.as_i64())
                 .unwrap_or(0)
@@ -4040,7 +4034,6 @@ pub fn run() {
                 });
             }
 
-            let settings = load_settings_internal(&app.handle().clone());
             let _ = apply_hotkey(&app.handle().clone(), &settings.hotkey);
             let _ = setup_tray(&app.handle().clone());
 
@@ -4057,7 +4050,7 @@ pub fn run() {
                 std::thread::spawn(move || loop {
                     std::thread::sleep(Duration::from_secs(20));
                     let st = load_settings_internal(&app_handle);
-                    if !st.schedule_enabled || st.paused {
+                    if !st.schedule_enabled || st.paused || st.roots.is_empty() {
                         continue;
                     }
                     if app_state

@@ -1,7 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "OfficeGhost",
-  "version": "0.3.3",
+  "mainBinaryName": "OfficeGhost",
+  "version": "0.3.4",
   "identifier": "com.officeghost.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
